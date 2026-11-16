@@ -13,11 +13,11 @@ Open `index.html` in a browser. No install or build step is required.
 | Left / Right | Move |
 | Up / Down | Look up or down; aim attacks |
 | Z | Jump; press again in the air for a double jump |
-| X | Nail attack |
+| X | Nail attack; hold Down + X in the air to pogo off enemies |
 | A (tap) | Cast a projectile |
 | A (hold) | Focus to spend SOUL and heal |
 | F | Quick cast |
-| C | Dash |
+| C | Dash (1.15-second cooldown) |
 | D | Dream Nail a nearby enemy to gain SOUL |
 | S (hold, release) | Charge and launch a super dash |
 | Tab | Arena map |

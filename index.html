@@ -106,9 +106,10 @@
         <span><kbd>↑</kbd> <kbd>↓</kbd> look / aim</span>
         <span><kbd>Z</kbd> jump · jump again in air</span>
         <span><kbd>X</kbd> Nail attack</span>
+        <span><kbd>↓</kbd> + <kbd>X</kbd> pogo on enemies</span>
         <span><kbd>A</kbd> cast · hold to focus</span>
         <span><kbd>F</kbd> quick cast</span>
-        <span><kbd>C</kbd> dash</span>
+        <span><kbd>C</kbd> dash · 1.15s cooldown</span>
         <span><kbd>D</kbd> Dream Nail</span>
         <span><kbd>S</kbd> hold, release to super dash</span>
         <span><kbd>Tab</kbd> map · <kbd>I</kbd> inventory · <kbd>Esc</kbd> pause</span>
@@ -131,7 +132,8 @@
           x: W / 2, y: floorY - 38, vx: 0, vy: 0, w: 30, h: 42,
           facing: 1, health: 5, maxHealth: 5, soul: 0, maxSoul: 100,
           grounded: true, jumpsRemaining: 2, invulnerable: 0, attack: 0, attackCooldown: 0,
-          dash: 0, superCharge: 0, superDash: 0, focus: 0, focusUsed: false
+          attackDown: false, dash: 0, dashCooldown: 0, superCharge: 0, superDash: 0,
+          focus: 0, focusUsed: false
         };
         const game = {
           wave: 0, waveWait: 0, defeated: 0, paused: false, overlay: "",
@@ -146,6 +148,10 @@
         const stars = Array.from({ length: 65 }, (_, i) => ({
           x: (i * 193 + 37) % W, y: (i * 79 + 23) % 310,
           r: .7 + (i % 3) * .45, phase: i * .9
+        }));
+        const motes = Array.from({ length: 28 }, (_, i) => ({
+          x: (i * 347 + 83) % W, y: 205 + (i * 127) % 235,
+          r: 1 + (i % 3) * .55, phase: i * 1.7
         }));
 
         const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
@@ -214,18 +220,29 @@
           if (player.attackCooldown > 0) return;
           player.attack = .22;
           player.attackCooldown = .3;
+          player.attackDown = keys.has("ArrowDown");
           const direction = player.facing;
-          const hitbox = {
-            x: player.x + direction * 13 + (direction < 0 ? -52 : 0),
-            y: player.y - player.h + (keys.has("ArrowDown") ? 16 : keys.has("ArrowUp") ? -12 : 4),
-            w: 52, h: 32
-          };
+          const hitbox = player.attackDown
+            ? { x: player.x - 19, y: player.y - 2, w: 38, h: 42 }
+            : {
+                x: player.x + direction * 13 + (direction < 0 ? -52 : 0),
+                y: player.y - player.h + (keys.has("ArrowUp") ? -12 : 4),
+                w: 52, h: 32
+              };
+          let pogoHit = false;
           for (const enemy of [...enemies]) {
             const enemyBox = { x: enemy.x - enemy.w / 2, y: enemy.y - enemy.h, w: enemy.w, h: enemy.h };
             if (overlaps(hitbox, enemyBox)) {
               hitEnemy(enemy, 1);
               player.soul = clamp(player.soul + 5, 0, player.maxSoul);
+              if (player.attackDown && !player.grounded && player.vy >= 0) pogoHit = true;
             }
+          }
+          if (pogoHit) {
+            player.vy = -480;
+            player.grounded = false;
+            player.jumpsRemaining = Math.max(player.jumpsRemaining, 1);
+            makeBurst(player.x, player.y + 2, "#c8f2df", 12);
           }
         }
 
@@ -292,6 +309,7 @@
           if (player.attack > 0) player.attack -= dt;
           if (player.attackCooldown > 0) player.attackCooldown -= dt;
           if (player.dash > 0) player.dash -= dt;
+          if (player.dashCooldown > 0) player.dashCooldown -= dt;
           if (player.superDash > 0) player.superDash -= dt;
 
           if (game.overlay) {
@@ -456,7 +474,6 @@
             ctx.fill();
           }
           ctx.globalAlpha = 1;
-
           const wall = ctx.createLinearGradient(0, 160, 0, floorY);
           wall.addColorStop(0, "#53616c");
           wall.addColorStop(.2, "#34424e");
@@ -556,6 +573,11 @@
           ctx.fillRect(0, floorY, W, 2);
 
           for (const platform of platforms) {
+            ctx.shadowColor = "#a9d8d1";
+            ctx.shadowBlur = 12;
+            ctx.fillStyle = "#9bcac044";
+            ctx.fillRect(platform.x, platform.y, platform.w, 3);
+            ctx.shadowBlur = 0;
             ctx.fillStyle = "#18232c";
             ctx.fillRect(platform.x + 5, platform.y + 13, platform.w, 8);
             const stone = ctx.createLinearGradient(0, platform.y, 0, platform.y + platform.h);
@@ -572,6 +594,20 @@
             }
           }
           drawPillars();
+
+          for (const mote of motes) {
+            const x = mote.x + Math.sin(game.time * .35 + mote.phase) * 13;
+            const y = mote.y + Math.sin(game.time * .65 + mote.phase) * 7;
+            ctx.globalAlpha = .18 + (Math.sin(game.time * 1.2 + mote.phase) + 1) * .16;
+            ctx.fillStyle = "#b8e4df";
+            ctx.shadowColor = "#8adbd1";
+            ctx.shadowBlur = 9;
+            ctx.beginPath();
+            ctx.arc(x, y, mote.r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          ctx.shadowBlur = 0;
 
           const vignette = ctx.createRadialGradient(W / 2, 240, 150, W / 2, 260, 610);
           vignette.addColorStop(.5, "#06101a00");
@@ -657,6 +693,22 @@
             ctx.fill();
             ctx.globalAlpha = 1;
           }
+          if (player.dash > 0 || player.superDash > 0) {
+            ctx.globalAlpha = player.superDash > 0 ? .8 : .55;
+            ctx.strokeStyle = player.superDash > 0 ? "#ffe6a1" : "#b6e9ef";
+            ctx.lineWidth = player.superDash > 0 ? 5 : 3;
+            ctx.shadowColor = ctx.strokeStyle;
+            ctx.shadowBlur = 14;
+            for (let i = 0; i < 3; i++) {
+              const trailY = -12 - i * 11;
+              ctx.beginPath();
+              ctx.moveTo(-(22 + i * 7), trailY);
+              ctx.lineTo(-(54 + i * 13), trailY + (i - 1) * 4);
+              ctx.stroke();
+            }
+            ctx.shadowBlur = 0;
+            ctx.globalAlpha = 1;
+          }
 
           const cloak = ctx.createLinearGradient(-18, -32, 18, -3);
           cloak.addColorStop(0, "#d9e7e6");
@@ -712,8 +764,13 @@
             ctx.lineWidth = 7;
             ctx.lineCap = "round";
             ctx.beginPath();
-            ctx.moveTo(9, -19);
-            ctx.lineTo(48, -28 + (keys.has("ArrowDown") ? 18 : keys.has("ArrowUp") ? -13 : 0));
+            if (player.attackDown) {
+              ctx.moveTo(7, -8);
+              ctx.lineTo(13, 30);
+            } else {
+              ctx.moveTo(9, -19);
+              ctx.lineTo(48, -28 + (keys.has("ArrowUp") ? -13 : 0));
+            }
             ctx.stroke();
             ctx.strokeStyle = "#a6dae2";
             ctx.lineWidth = 2;
@@ -891,6 +948,26 @@
           ctx.fillStyle = "#c9d8dd";
           ctx.font = "11px system-ui";
           ctx.fillText("SOUL", 220, 150);
+          const dashX = W - 188;
+          ctx.fillStyle = "#111b26dd";
+          ctx.fillRect(dashX, 20, 168, 48);
+          ctx.strokeStyle = "#a9c1c44d";
+          ctx.strokeRect(dashX, 20, 168, 48);
+          ctx.fillStyle = "#e6edf0";
+          ctx.font = "700 12px system-ui";
+          ctx.fillText("DASH", dashX + 11, 39);
+          ctx.textAlign = "right";
+          ctx.fillStyle = player.dashCooldown <= 0 ? "#a8e7d4" : "#aab9c1";
+          ctx.fillText(player.dashCooldown <= 0 ? "READY" : "RECOVERING", W - 31, 39);
+          ctx.textAlign = "start";
+          ctx.fillStyle = "#26333c";
+          ctx.fillRect(dashX + 11, 48, 146, 7);
+          const dashReady = clamp(1 - player.dashCooldown / 1.15, 0, 1);
+          ctx.fillStyle = player.dashCooldown <= 0 ? "#8de1c7" : "#83bdc8";
+          ctx.shadowColor = ctx.fillStyle;
+          ctx.shadowBlur = 7;
+          ctx.fillRect(dashX + 11, 48, 146 * dashReady, 7);
+          ctx.shadowBlur = 0;
           if (game.messageTime > 0) {
             ctx.textAlign = "center";
             ctx.font = "bold 26px system-ui";
@@ -962,7 +1039,8 @@
           player.x = W / 2; player.y = floorY; player.vx = 0; player.vy = 0;
           player.health = player.maxHealth; player.soul = 0; player.grounded = true;
           player.jumpsRemaining = 2;
-          player.invulnerable = 0; player.dash = 0; player.superDash = 0;
+          player.invulnerable = 0; player.dash = 0; player.dashCooldown = 0; player.superDash = 0;
+          player.attack = 0; player.attackCooldown = 0; player.attackDown = false;
           enemies.length = 0; projectiles.length = 0; particles.length = 0;
           game.wave = 0; game.waveWait = 0; game.defeated = 0;
           game.spawnQueue = 0; game.gameOver = false; game.paused = false;
@@ -1002,8 +1080,9 @@
             player.focusUsed = false;
           } else if (code === "KeyF") {
             quickCast();
-          } else if (code === "KeyC" && player.dash <= 0 && player.superDash <= 0) {
+          } else if (code === "KeyC" && player.dash <= 0 && player.dashCooldown <= 0 && player.superDash <= 0) {
             player.dash = .19;
+            player.dashCooldown = 1.15;
             makeBurst(player.x, player.y - 18, "#b6dce5", 5);
           } else if (code === "KeyD") {
             dreamNail();
