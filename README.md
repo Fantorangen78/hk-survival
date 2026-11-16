@@ -12,7 +12,7 @@ Open `index.html` in a browser. No install or build step is required.
 | --- | --- |
 | Left / Right | Move |
 | Up / Down | Look up or down; aim attacks |
-| Z | Jump |
+| Z | Jump; press again in the air for a double jump |
 | X | Nail attack |
 | A (tap) | Cast a projectile |
 | A (hold) | Focus to spend SOUL and heal |
