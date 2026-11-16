@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10151c">
+    <title>Arena of the Deep</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #10151c;
+        color: #e8edf2;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(ellipse at 50% 20%, #263746 0, transparent 55%),
+          #10151c;
+      }
+
+      main { width: min(100%, 1000px); }
+
+      .heading {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.25rem, 3vw, 1.8rem);
+        letter-spacing: .12em;
+        text-transform: uppercase;
+      }
+
+      .subtitle {
+        margin: 5px 0 0;
+        color: #9eacb8;
+        font-size: .9rem;
+      }
+
+      .status { color: #a7bbc6; font-size: .85rem; text-align: right; }
+
+      .game-frame {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid #60707c;
+        border-radius: 12px;
+        background: #101c26;
+        box-shadow: 0 24px 80px #0008;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 16 / 9;
+        image-rendering: pixelated;
+      }
+
+      .help {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 18px;
+        padding: 13px 4px 0;
+        color: #b7c1c8;
+        font-size: .82rem;
+        line-height: 1.5;
+      }
+
+      .help strong { color: #e7edf1; }
+      kbd {
+        padding: 2px 6px;
+        border: 1px solid #53616b;
+        border-radius: 4px;
+        background: #202a32;
+        color: #f3f5f6;
+        font: inherit;
+        font-size: .76rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="heading">
+        <div>
+          <h1>Arena of the Deep</h1>
+          <p class="subtitle">A little wave-survival arena. Hold your ground.</p>
+        </div>
+        <div class="status">Original prototype · No external assets</div>
+      </header>
+      <div class="game-frame">
+        <canvas id="game" width="960" height="540" aria-label="Arena of the Deep game"></canvas>
+      </div>
+      <section class="help" aria-label="Controls">
+        <span><kbd>←</kbd> <kbd>→</kbd> move</span>
+        <span><kbd>↑</kbd> <kbd>↓</kbd> look / aim</span>
+        <span><kbd>Z</kbd> jump</span>
+        <span><kbd>X</kbd> Nail attack</span>
+        <span><kbd>A</kbd> cast · hold to focus</span>
+        <span><kbd>F</kbd> quick cast</span>
+        <span><kbd>C</kbd> dash</span>
+        <span><kbd>D</kbd> Dream Nail</span>
+        <span><kbd>S</kbd> hold, release to super dash</span>
+        <span><kbd>Tab</kbd> map · <kbd>I</kbd> inventory · <kbd>Esc</kbd> pause</span>
+      </section>
+    </main>
+    <script>
+      (() => {
+        "use strict";
+
+        const canvas = document.querySelector("#game");
+        const ctx = canvas.getContext("2d");
+        const W = canvas.width;
+        const H = canvas.height;
+        const floorY = 456;
+        const keys = new Set();
+        const particles = [];
+        const enemies = [];
+        const projectiles = [];
+        const player = {
+          x: W / 2, y: floorY - 38, vx: 0, vy: 0, w: 30, h: 42,
+          facing: 1, health: 5, maxHealth: 5, soul: 0, maxSoul: 100,
+          grounded: true, invulnerable: 0, attack: 0, attackCooldown: 0,
+          dash: 0, superCharge: 0, superDash: 0, focus: 0, focusUsed: false
+        };
+        const game = {
+          wave: 0, waveWait: 0, defeated: 0, paused: false, overlay: "",
+          time: 0, message: "", messageTime: 0, gameOver: false,
+          spawnQueue: 0, spawnTimer: 0, messageWave: false
+        };
+        const platforms = [
+          { x: 118, y: 354, w: 150, h: 16 },
+          { x: 692, y: 354, w: 150, h: 16 },
+          { x: 392, y: 286, w: 176, h: 16 }
+        ];
+        const stars = Array.from({ length: 65 }, (_, i) => ({
+          x: (i * 193 + 37) % W, y: (i * 79 + 23) % 310,
+          r: .7 + (i % 3) * .45, phase: i * .9
+        }));
+
+        const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+        const justPressed = new Set();
+
+        function setMessage(text, duration = 1.6) {
+          game.message = text;
+          game.messageTime = duration;
+        }
+
+        function makeBurst(x, y, color, count = 8) {
+          for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 35 + Math.random() * 150;
+            particles.push({
+              x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+              life: .25 + Math.random() * .45, maxLife: .7, color,
+              size: 2 + Math.random() * 3
+            });
+          }
+        }
+
+        function startWave() {
+          game.wave += 1;
+          game.spawnQueue = 3 + game.wave * 2;
+          game.spawnTimer = .3;
+          game.messageWave = true;
+          setMessage(`WAVE ${game.wave}`, 1.7);
+        }
+
+        function spawnEnemy() {
+          const roll = Math.random();
+          const type = game.wave >= 3 && roll < .26 ? "flyer" : roll < .63 ? "runner" : "brute";
+          const fromLeft = Math.random() < .5;
+          const isFlyer = type === "flyer";
+          enemies.push({
+            type, x: fromLeft ? -28 : W + 28,
+            y: isFlyer ? 245 + Math.random() * 100 : floorY - (type === "brute" ? 48 : 34),
+            w: type === "brute" ? 42 : 30, h: type === "brute" ? 48 : 34,
+            hp: type === "brute" ? 3 : 1,
+            speed: (type === "brute" ? 62 : type === "flyer" ? 92 : 108) + game.wave * 4,
+            damageCooldown: 0, phase: Math.random() * 10
+          });
+        }
+
+        function playerRect() {
+          return { x: player.x - player.w / 2, y: player.y - player.h, w: player.w, h: player.h };
+        }
+
+        function overlaps(a, b) {
+          return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        }
+
+        function hitEnemy(enemy, damage, color = "#c8f2df") {
+          enemy.hp -= damage;
+          makeBurst(enemy.x, enemy.y - enemy.h / 2, color, 6);
+          if (enemy.hp <= 0) {
+            const index = enemies.indexOf(enemy);
+            if (index !== -1) enemies.splice(index, 1);
+            player.soul = clamp(player.soul + 14, 0, player.maxSoul);
+            game.defeated += 1;
+          }
+        }
+
+        function attack() {
+          if (player.attackCooldown > 0) return;
+          player.attack = .22;
+          player.attackCooldown = .3;
+          const direction = player.facing;
+          const hitbox = {
+            x: player.x + direction * 13 + (direction < 0 ? -52 : 0),
+            y: player.y - player.h + (keys.has("ArrowDown") ? 16 : keys.has("ArrowUp") ? -12 : 4),
+            w: 52, h: 32
+          };
+          for (const enemy of [...enemies]) {
+            const enemyBox = { x: enemy.x - enemy.w / 2, y: enemy.y - enemy.h, w: enemy.w, h: enemy.h };
+            if (overlaps(hitbox, enemyBox)) {
+              hitEnemy(enemy, 1);
+              player.soul = clamp(player.soul + 5, 0, player.maxSoul);
+            }
+          }
+        }
+
+        function castSpell() {
+          if (player.soul < 33) {
+            setMessage("Need more SOUL to cast");
+            return;
+          }
+          player.soul -= 33;
+          const direction = player.facing;
+          projectiles.push({
+            x: player.x + direction * 22, y: player.y - player.h * .57,
+            vx: direction * 370, life: 1.15, radius: 13, damage: 2
+          });
+          makeBurst(player.x + direction * 21, player.y - 20, "#a9eaff", 5);
+        }
+
+        function quickCast() {
+          if (player.soul < 33) {
+            setMessage("Need more SOUL to cast");
+            return;
+          }
+          player.soul -= 33;
+          const direction = player.facing;
+          for (const enemy of [...enemies]) {
+            if (Math.abs(enemy.x - player.x) < 205 && Math.abs(enemy.y - player.y) < 120) {
+              hitEnemy(enemy, 2, "#c8b7ff");
+            }
+          }
+          makeBurst(player.x + direction * 45, player.y - 20, "#c8b7ff", 15);
+        }
+
+        function dreamNail() {
+          const target = enemies.find(enemy =>
+            Math.abs(enemy.x - player.x) < 82 && Math.abs(enemy.y - player.y) < 90
+          );
+          if (!target) {
+            setMessage("No nearby target");
+            return;
+          }
+          hitEnemy(target, 1, "#e1c4ff");
+          player.soul = clamp(player.soul + 30, 0, player.maxSoul);
+          setMessage("SOUL gathered");
+        }
+
+        function damagePlayer() {
+          if (player.invulnerable > 0 || player.dash > 0 || player.superDash > 0 || player.health <= 0) return;
+          player.health -= 1;
+          player.invulnerable = 1.05;
+          player.vx = player.x < W / 2 ? -210 : 210;
+          player.vy = -170;
+          makeBurst(player.x, player.y - 20, "#ff8e9b", 12);
+          if (player.health <= 0) {
+            game.gameOver = true;
+            game.paused = true;
+            game.overlay = "gameover";
+          }
+        }
+
+        function update(dt) {
+          game.time += dt;
+          if (game.messageTime > 0) game.messageTime -= dt;
+          if (player.invulnerable > 0) player.invulnerable -= dt;
+          if (player.attack > 0) player.attack -= dt;
+          if (player.attackCooldown > 0) player.attackCooldown -= dt;
+          if (player.dash > 0) player.dash -= dt;
+          if (player.superDash > 0) player.superDash -= dt;
+
+          if (game.overlay) {
+            if (justPressed.has("Escape") || justPressed.has("Tab") || justPressed.has("i")) {
+              if (game.overlay === "gameover" && justPressed.has("Escape")) resetGame();
+              else if (!game.gameOver) game.overlay = "";
+            }
+            if (game.gameOver) return;
+          }
+          if (game.paused) return;
+
+          if (keys.has("ArrowLeft")) {
+            player.facing = -1;
+            if (player.dash <= 0 && player.superDash <= 0) player.vx = -220;
+          } else if (keys.has("ArrowRight")) {
+            player.facing = 1;
+            if (player.dash <= 0 && player.superDash <= 0) player.vx = 220;
+          } else if (player.dash <= 0 && player.superDash <= 0) {
+            player.vx *= player.grounded ? .72 : .96;
+            if (Math.abs(player.vx) < 3) player.vx = 0;
+          }
+
+          if (keys.has("KeyA") && player.focus < .55) {
+            player.focus += dt;
+          } else if (player.focus >= .55) {
+            player.focusUsed = true;
+            player.focus = 0;
+            if (player.soul >= 33 && player.health < player.maxHealth) {
+              player.soul -= 33;
+              player.health += 1;
+              setMessage("Focused · mask restored");
+              makeBurst(player.x, player.y - 22, "#b7f4df", 10);
+            } else if (player.health >= player.maxHealth) {
+              setMessage("Already at full health");
+            } else {
+              setMessage("Need more SOUL to focus");
+            }
+          }
+
+          if (keys.has("KeyS")) {
+            player.superCharge = Math.min(1.1, player.superCharge + dt);
+          }
+
+          const previousFeet = player.y;
+          if (player.superDash > 0) {
+            player.x += player.facing * 660 * dt;
+            for (const enemy of [...enemies]) {
+              if (Math.abs(enemy.x - player.x) < enemy.w / 2 + 20 && Math.abs(enemy.y - player.y) < 50) {
+                hitEnemy(enemy, 3, "#ffe6a1");
+              }
+            }
+          } else if (player.dash > 0) {
+            player.x += player.facing * 580 * dt;
+          } else {
+            player.x += player.vx * dt;
+            player.vy += 1050 * dt;
+            player.y += player.vy * dt;
+          }
+
+          player.x = clamp(player.x, 20, W - 20);
+          const feet = player.y;
+          player.grounded = false;
+          if (feet >= floorY) {
+            player.y = floorY;
+            player.vy = 0;
+            player.grounded = true;
+          } else if (player.vy >= 0) {
+            for (const platform of platforms) {
+              if (previousFeet <= platform.y && feet >= platform.y &&
+                  player.x + player.w / 2 > platform.x && player.x - player.w / 2 < platform.x + platform.w) {
+                player.y = platform.y;
+                player.vy = 0;
+                player.grounded = true;
+                break;
+              }
+            }
+          }
+          if (player.grounded && player.superDash <= 0) player.superCharge = 0;
+
+          if (game.spawnQueue > 0) {
+            game.spawnTimer -= dt;
+            if (game.spawnTimer <= 0) {
+              spawnEnemy();
+              game.spawnQueue -= 1;
+              game.spawnTimer = Math.max(.45, .95 - game.wave * .025);
+            }
+          } else if (enemies.length === 0) {
+            game.waveWait += dt;
+            if (game.waveWait > 2.2) {
+              game.waveWait = 0;
+              startWave();
+            }
+          }
+
+          for (const enemy of [...enemies]) {
+            enemy.phase += dt;
+            enemy.damageCooldown -= dt;
+            const delta = player.x - enemy.x;
+            if (enemy.type === "flyer") {
+              enemy.x += Math.sign(delta) * enemy.speed * dt;
+              enemy.y += Math.sin(enemy.phase * 2.5) * 35 * dt;
+              enemy.y += clamp((player.y - 70 - enemy.y) * .6, -45, 45) * dt;
+            } else {
+              enemy.x += Math.sign(delta) * enemy.speed * dt;
+            }
+            if (overlaps(playerRect(), {
+              x: enemy.x - enemy.w / 2, y: enemy.y - enemy.h, w: enemy.w, h: enemy.h
+            }) && enemy.damageCooldown <= 0) {
+              damagePlayer();
+              enemy.damageCooldown = .85;
+            }
+          }
+
+          for (const projectile of [...projectiles]) {
+            projectile.x += projectile.vx * dt;
+            projectile.life -= dt;
+            let hit = false;
+            for (const enemy of [...enemies]) {
+              if (Math.abs(enemy.x - projectile.x) < enemy.w / 2 + projectile.radius &&
+                  Math.abs(enemy.y - enemy.h / 2 - projectile.y) < enemy.h / 2 + projectile.radius) {
+                hitEnemy(enemy, projectile.damage, "#a9eaff");
+                hit = true;
+                break;
+              }
+            }
+            if (hit || projectile.life <= 0 || projectile.x < -20 || projectile.x > W + 20) {
+              const index = projectiles.indexOf(projectile);
+              if (index !== -1) projectiles.splice(index, 1);
+            }
+          }
+
+          for (const particle of [...particles]) {
+            particle.x += particle.vx * dt;
+            particle.y += particle.vy * dt;
+            particle.vy += 220 * dt;
+            particle.life -= dt;
+            if (particle.life <= 0) particles.splice(particles.indexOf(particle), 1);
+          }
+        }
+
+        function drawBackground() {
+          const gradient = ctx.createLinearGradient(0, 0, 0, H);
+          gradient.addColorStop(0, "#172938");
+          gradient.addColorStop(.63, "#233747");
+          gradient.addColorStop(1, "#17232d");
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, W, H);
+          for (const star of stars) {
+            ctx.globalAlpha = .35 + Math.sin(game.time * 1.4 + star.phase) * .2;
+            ctx.fillStyle = "#d5e7ee";
+            ctx.beginPath();
+            ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "#1c2a33";
+          ctx.beginPath();
+          ctx.moveTo(0, 355);
+          for (let x = 0; x <= W; x += 80) {
+            ctx.lineTo(x, 315 + Math.sin(x * .018) * 23);
+          }
+          ctx.lineTo(W, floorY);
+          ctx.lineTo(0, floorY);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = "#354954";
+          ctx.fillRect(0, floorY, W, H - floorY);
+          ctx.fillStyle = "#80959c";
+          ctx.fillRect(0, floorY, W, 3);
+          for (const platform of platforms) {
+            ctx.fillStyle = "#536974";
+            ctx.fillRect(platform.x, platform.y, platform.w, platform.h);
+            ctx.fillStyle = "#a0b7bc";
+            ctx.fillRect(platform.x, platform.y, platform.w, 3);
+          }
+          drawPillars();
+        }
+
+        function drawPillars() {
+          for (const x of [70, 870]) {
+            ctx.fillStyle = "#344650";
+            ctx.fillRect(x, 190, 22, 267);
+            ctx.fillStyle = "#526773";
+            ctx.fillRect(x - 9, 187, 40, 10);
+            ctx.fillRect(x - 6, 240, 34, 7);
+            ctx.fillStyle = "#1b2b35";
+            ctx.fillRect(x + 6, 205, 4, 240);
+          }
+        }
+
+        function drawPlayer() {
+          if (player.invulnerable > 0 && Math.floor(game.time * 18) % 2 === 0) return;
+          const x = player.x;
+          const y = player.y;
+          ctx.save();
+          ctx.translate(x, y);
+          if (player.facing < 0) ctx.scale(-1, 1);
+          if (player.superCharge > 0) {
+            ctx.globalAlpha = .35 + player.superCharge * .35;
+            ctx.fillStyle = "#ffe6a1";
+            ctx.beginPath();
+            ctx.ellipse(-5, -20, 20 + player.superCharge * 10, 25, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+          }
+          ctx.fillStyle = "#e7edf0";
+          ctx.beginPath();
+          ctx.ellipse(0, -26, 13, 16, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#d6e0e5";
+          ctx.beginPath();
+          ctx.moveTo(-9, -38);
+          ctx.lineTo(-16, -52);
+          ctx.lineTo(-5, -42);
+          ctx.moveTo(7, -39);
+          ctx.lineTo(16, -51);
+          ctx.lineTo(12, -36);
+          ctx.fill();
+          ctx.fillStyle = "#223640";
+          ctx.fillRect(3, -29, 3, 5);
+          ctx.fillRect(10, -29, 3, 5);
+          ctx.fillStyle = "#b8cbd0";
+          ctx.beginPath();
+          ctx.moveTo(-9, -13);
+          ctx.quadraticCurveTo(0, -5, 11, -14);
+          ctx.lineTo(9, -3);
+          ctx.lineTo(-8, -3);
+          ctx.fill();
+          if (player.attack > 0) {
+            ctx.strokeStyle = "#f5ffff";
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.moveTo(11, -23);
+            ctx.lineTo(46, -26 + (keys.has("ArrowDown") ? 18 : keys.has("ArrowUp") ? -13 : 0));
+            ctx.stroke();
+            ctx.strokeStyle = "#a6dae2";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          }
+          if (player.focus > 0) {
+            ctx.strokeStyle = "#b4f0dc";
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = .35 + player.focus;
+            ctx.beginPath();
+            ctx.arc(0, -22, 25 + player.focus * 10, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
+          ctx.restore();
+        }
+
+        function drawEnemy(enemy) {
+          ctx.save();
+          ctx.translate(enemy.x, enemy.y);
+          const flying = enemy.type === "flyer";
+          ctx.fillStyle = enemy.type === "brute" ? "#bd7775" : flying ? "#83a6ae" : "#c5a06f";
+          ctx.beginPath();
+          if (flying) {
+            const flap = Math.sin(enemy.phase * 12) * 8;
+            ctx.ellipse(0, -enemy.h / 2, enemy.w / 2, enemy.h / 2, 0, 0, Math.PI * 2);
+            ctx.moveTo(-8, -18);
+            ctx.quadraticCurveTo(-31, -40 - flap, -23, -8);
+            ctx.quadraticCurveTo(-16, -6, -8, -18);
+            ctx.moveTo(8, -18);
+            ctx.quadraticCurveTo(31, -40 + flap, 23, -8);
+            ctx.quadraticCurveTo(16, -6, 8, -18);
+          } else {
+            ctx.ellipse(0, -enemy.h / 2, enemy.w / 2, enemy.h / 2, 0, Math.PI, 0);
+            ctx.lineTo(enemy.w / 2, 0);
+            ctx.lineTo(-enemy.w / 2, 0);
+          }
+          ctx.fill();
+          ctx.fillStyle = "#1c2830";
+          ctx.fillRect(-8, -enemy.h + 12, 4, 4);
+          ctx.fillRect(5, -enemy.h + 12, 4, 4);
+          if (enemy.hp > 1) {
+            ctx.fillStyle = "#482f38";
+            ctx.fillRect(-16, -enemy.h - 10, 32, 4);
+            ctx.fillStyle = "#f0b3a5";
+            ctx.fillRect(-16, -enemy.h - 10, 32 * (enemy.hp / 3), 4);
+          }
+          ctx.restore();
+        }
+
+        function drawHud() {
+          ctx.fillStyle = "#111a22cc";
+          ctx.fillRect(20, 18, 245, 74);
+          ctx.strokeStyle = "#778b96";
+          ctx.strokeRect(20, 18, 245, 74);
+          ctx.fillStyle = "#e6edf0";
+          ctx.font = "bold 17px system-ui";
+          ctx.fillText(`WAVE ${game.wave || 1}`, 34, 43);
+          ctx.font = "13px system-ui";
+          ctx.fillStyle = "#aab9c1";
+          ctx.fillText(`DEFEATED  ${game.defeated}`, 34, 66);
+          for (let i = 0; i < player.maxHealth; i++) {
+            ctx.fillStyle = i < player.health ? "#e5f1ed" : "#485760";
+            ctx.beginPath();
+            ctx.arc(36 + i * 27, 119, 8, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.fillStyle = "#141e26";
+          ctx.fillRect(20, 139, 192, 12);
+          ctx.fillStyle = "#94d5dc";
+          ctx.fillRect(20, 139, 192 * (player.soul / player.maxSoul), 12);
+          ctx.strokeStyle = "#b5dce0";
+          ctx.strokeRect(20, 139, 192, 12);
+          ctx.fillStyle = "#c9d8dd";
+          ctx.font = "11px system-ui";
+          ctx.fillText("SOUL", 220, 150);
+          if (game.messageTime > 0) {
+            ctx.textAlign = "center";
+            ctx.font = "bold 26px system-ui";
+            ctx.fillStyle = "#f0f3f1";
+            ctx.shadowColor = "#101820";
+            ctx.shadowBlur = 12;
+            ctx.fillText(game.message, W / 2, 125);
+            ctx.shadowBlur = 0;
+            ctx.textAlign = "start";
+          }
+          if (player.superCharge > 0) {
+            ctx.fillStyle = "#222a30";
+            ctx.fillRect(W / 2 - 60, H - 25, 120, 8);
+            ctx.fillStyle = "#ffe6a1";
+            ctx.fillRect(W / 2 - 60, H - 25, 120 * player.superCharge / 1.1, 8);
+          }
+        }
+
+        function drawOverlay() {
+          if (!game.overlay) return;
+          ctx.fillStyle = "#081018d9";
+          ctx.fillRect(0, 0, W, H);
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#edf3f3";
+          ctx.font = "bold 36px system-ui";
+          let title = "PAUSED";
+          let lines = ["Esc to return"];
+          if (game.overlay === "map") {
+            title = "ARENA MAP";
+            lines = ["A single arena. Enemies approach from both sides.", "Platforms can give you a moment to breathe.", "Tab to return"];
+          } else if (game.overlay === "inventory") {
+            title = "FIELD NOTES";
+            lines = [`Wave ${game.wave || 1}   ·   ${game.defeated} foes defeated`, "SOUL powers your spell and Focus heal.", "I to return"];
+          } else if (game.overlay === "gameover") {
+            title = "FALLEN IN THE ARENA";
+            lines = [`You reached wave ${game.wave || 1} and defeated ${game.defeated} foes.`, "Esc to try again"];
+          }
+          ctx.fillText(title, W / 2, H / 2 - 48);
+          ctx.font = "17px system-ui";
+          ctx.fillStyle = "#bdcbd0";
+          lines.forEach((line, i) => ctx.fillText(line, W / 2, H / 2 + i * 29));
+          ctx.textAlign = "start";
+        }
+
+        function render() {
+          drawBackground();
+          for (const projectile of projectiles) {
+            ctx.fillStyle = "#a9eaff";
+            ctx.shadowColor = "#a9eaff";
+            ctx.shadowBlur = 15;
+            ctx.beginPath();
+            ctx.arc(projectile.x, projectile.y, projectile.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+          }
+          for (const enemy of enemies) drawEnemy(enemy);
+          for (const particle of particles) {
+            ctx.globalAlpha = clamp(particle.life / particle.maxLife, 0, 1);
+            ctx.fillStyle = particle.color;
+            ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
+          }
+          ctx.globalAlpha = 1;
+          drawPlayer();
+          drawHud();
+          drawOverlay();
+        }
+
+        function resetGame() {
+          player.x = W / 2; player.y = floorY; player.vx = 0; player.vy = 0;
+          player.health = player.maxHealth; player.soul = 0; player.grounded = true;
+          player.invulnerable = 0; player.dash = 0; player.superDash = 0;
+          enemies.length = 0; projectiles.length = 0; particles.length = 0;
+          game.wave = 0; game.waveWait = 0; game.defeated = 0;
+          game.spawnQueue = 0; game.gameOver = false; game.paused = false;
+          game.overlay = ""; game.messageTime = 0;
+          startWave();
+        }
+
+        function handleKeyDown(event) {
+          const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+          const code = event.code;
+          if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Tab", " "].includes(key)) event.preventDefault();
+          if (keys.has(code)) return;
+          keys.add(code);
+          justPressed.add(code);
+
+          if (code === "Escape") {
+            if (game.gameOver) resetGame();
+            else {
+              game.paused = !game.paused;
+              game.overlay = game.paused ? "pause" : "";
+            }
+          } else if (game.paused || game.gameOver) {
+            if (code === "Tab" || code === "KeyI") {
+              game.overlay = "";
+              game.paused = false;
+            }
+          } else if (code === "KeyZ" && player.grounded) {
+            player.vy = -410;
+            player.grounded = false;
+          } else if (code === "KeyX") {
+            attack();
+          } else if (code === "KeyA" && !event.repeat) {
+            player.focus = 0;
+            player.focusUsed = false;
+          } else if (code === "KeyF") {
+            quickCast();
+          } else if (code === "KeyC" && player.dash <= 0 && player.superDash <= 0) {
+            player.dash = .19;
+            makeBurst(player.x, player.y - 18, "#b6dce5", 5);
+          } else if (code === "KeyD") {
+            dreamNail();
+          } else if (code === "Tab") {
+            game.paused = true;
+            game.overlay = "map";
+          } else if (code === "KeyI") {
+            game.paused = true;
+            game.overlay = "inventory";
+          }
+        }
+
+        function handleKeyUp(event) {
+          keys.delete(event.code);
+          if (event.code === "KeyA") {
+            if (!player.focusUsed && player.focus < .55) castSpell();
+            player.focus = 0;
+            player.focusUsed = false;
+          }
+          if (event.code === "KeyS" && player.superCharge > .15) {
+            player.superDash = .38;
+            player.vy = 0;
+            makeBurst(player.x, player.y - 20, "#ffe6a1", 10);
+          }
+        }
+
+        let last = performance.now();
+        function frame(now) {
+          const dt = Math.min((now - last) / 1000, .033);
+          last = now;
+          update(dt);
+          render();
+          justPressed.clear();
+          requestAnimationFrame(frame);
+        }
+
+        window.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("keyup", handleKeyUp);
+        window.addEventListener("blur", () => keys.clear());
+        startWave();
+        requestAnimationFrame(frame);
+      })();
+    </script>
+  </body>
+</html>
